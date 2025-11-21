@@ -25,9 +25,18 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
    ```
 
 2. Create a virtual environment and install dependencies:
+
+   **Linux/macOS:**
    ```bash
    python3 -m venv venv
    source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+   **Windows:**
+   ```cmd
+   python -m venv venv
+   venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
@@ -40,17 +49,30 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
 
 ### CPU Mode
 
+**Linux/macOS:**
 ```bash
 source venv/bin/activate
 python profanity_filter.py /path/to/video.mkv
+```
+
+**Windows:**
+```cmd
+venv\Scripts\activate
+python profanity_filter.py C:\path\to\video.mkv
 ```
 
 ### GPU Mode (CUDA)
 
 Use the wrapper script which sets up cuDNN library paths:
 
+**Linux/macOS:**
 ```bash
 ./run.sh /path/to/video.mkv
+```
+
+**Windows:**
+```cmd
+run.bat C:\path\to\video.mkv
 ```
 
 ### Other Options
