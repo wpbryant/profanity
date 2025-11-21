@@ -139,19 +139,36 @@ def get_audio_info(video_path: Path) -> dict:
     return data.get("streams", [])
 
 
-def extract_audio(video_path: Path, output_path: Path, track_index: int = 0) -> None:
-    """Extract audio track from video to WAV file."""
+def extract_audio(
+    video_path: Path,
+    output_path: Path,
+    track_index: int = 0,
+    for_transcription: bool = True
+) -> None:
+    """Extract audio track from video.
+
+    Args:
+        video_path: Path to video file
+        output_path: Path for extracted audio
+        track_index: Which audio track to extract
+        for_transcription: If True, converts to mono 16kHz for Whisper.
+                          If False, preserves original channels/sample rate.
+    """
     cmd = [
         "ffmpeg",
         "-i", str(video_path),
         "-map", f"0:a:{track_index}",
         "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-ac", "1",
-        "-y",
-        str(output_path),
     ]
+
+    if for_transcription:
+        # Mono 16kHz for Whisper
+        cmd.extend(["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"])
+    else:
+        # Preserve original channels and sample rate
+        cmd.extend(["-acodec", "pcm_s16le"])
+
+    cmd.extend(["-y", str(output_path)])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -377,16 +394,17 @@ def process_video(
     # Create temp directory for intermediate files
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        extracted_audio = temp_path / "extracted.wav"
+        audio_for_transcription = temp_path / "audio_mono.wav"
+        audio_full_quality = temp_path / "audio_full.wav"
         clean_audio = temp_path / "clean.wav"
 
-        # Extract audio
-        log.info("Extracting audio...")
-        extract_audio(video_path, extracted_audio, config["audio_track_index"])
+        # Extract mono audio for Whisper transcription
+        log.info("Extracting audio for transcription...")
+        extract_audio(video_path, audio_for_transcription, config["audio_track_index"], for_transcription=True)
 
         # Transcribe
         words = transcribe_audio(
-            extracted_audio,
+            audio_for_transcription,
             config["whisper_model"],
             config["whisper_device"],
         )
@@ -428,10 +446,14 @@ def process_video(
                 "output_path": None,
             }
 
-        # Create clean audio
+        # Extract full quality audio (preserves original channels: stereo, 5.1, etc.)
+        log.info("Extracting full quality audio...")
+        extract_audio(video_path, audio_full_quality, config["audio_track_index"], for_transcription=False)
+
+        # Create clean audio with muted profanity
         log.info("Creating clean audio track...")
         volume_boost = config.get("volume_boost", 1.0)
-        create_clean_audio(extracted_audio, clean_audio, mute_ranges, volume_boost)
+        create_clean_audio(audio_full_quality, clean_audio, mute_ranges, volume_boost)
 
         # Remux video - write to temp file first, then replace original
         log.info("Adding clean audio track to video...")
