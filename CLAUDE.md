@@ -1,147 +1,63 @@
-## Project: Audio Profanity Filter (Python)
+# CLAUDE.md
 
-### Overview
-Python script that generates "clean" audio tracks for video files by detecting and muting profanity using Whisper speech-to-text and ffmpeg.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-### Core Requirements
+## Commands
 
-**Primary Script: `profanity_filter.py`**
-
-**Inputs:**
-- Video file path (support .mkv, .mp4, .avi)
-- Profanity word list file (`profanity_words.txt`)
-- Configuration options (padding, Whisper model, etc.)
-
-**Outputs:**
-- Modified video file with additional "Clean" audio track
-- Log file with detected profanity and timestamps
-
-### Implementation Steps
-
-1. **Setup & Configuration**
-   - Parse command-line arguments
-   - Load config file (YAML or JSON)
-   - Load profanity word list
-   - Validate dependencies (ffmpeg, whisper)
-
-2. **Audio Extraction**
-   - Use subprocess to call ffmpeg
-   - Extract audio to temporary file (.wav or .mp3)
-   - Handle multiple audio tracks (select primary)
-
-3. **Speech Recognition**
-   - Run Whisper on extracted audio
-   - Get word-level timestamps
-   - Use `faster-whisper` library for efficiency
-   - Progress indicator during processing
-
-4. **Profanity Detection**
-   - Parse Whisper output (JSON format)
-   - Match words against profanity list (case-insensitive)
-   - Build list of timestamp ranges: `[(start, end), ...]`
-   - Apply padding to timestamps
-
-5. **Generate FFmpeg Filter**
-   - Convert timestamp list to ffmpeg volume filter string
-   - Format: `"volume=enable='between(t,START,END)':volume=0"`
-   - Chain multiple filters with commas
-
-6. **Audio Processing**
-   - Apply filter to extracted audio
-   - Create new clean audio file
-
-7. **Remux Video**
-   - Add clean audio track back to original video
-   - Preserve all original streams
-   - Set metadata: `title="English (Clean)"`
-   - Output to new file or replace original
-
-8. **Cleanup**
-   - Remove temporary audio files
-   - Write log file with results
-
-### File Structure
-```
-profanity-filter/
-├── profanity_filter.py
-├── config.yaml
-├── profanity_words.txt
-├── requirements.txt
-├── README.md
-└── .gitignore
-```
-
-### Configuration File (config.yaml)
-```yaml
-# Whisper settings
-whisper_model: "base"  # tiny, base, small, medium, large
-whisper_device: "cpu"  # or "cuda" for GPU
-
-# Filtering settings
-padding_before_ms: 100
-padding_after_ms: 150
-profanity_file: "profanity_words.txt"
-
-# Output settings
-output_suffix: "_clean"
-keep_original: true
-log_detections: true
-
-# Audio settings
-audio_track_index: 0  # which audio track to process
-clean_track_title: "English (Clean)"
-```
-
-### Dependencies (requirements.txt)
-```
-faster-whisper>=0.10.0
-pyyaml>=6.0
-```
-
-### Command-Line Usage
 ```bash
-# Basic usage
-python profanity_filter.py movie.mkv
+# Run the filter (use wrapper script for CUDA/cuDNN support)
+./run.sh /path/to/video.mkv
 
-# Custom config
-python profanity_filter.py movie.mkv --config custom_config.yaml
-
-# Dry run (show detections without processing)
-python profanity_filter.py movie.mkv --dry-run
+# Dry run - preview detections without modifying files
+./run.sh /path/to/video.mkv --dry-run
 
 # Batch process directory
-python profanity_filter.py /path/to/movies/ --recursive
+./run.sh /path/to/videos/ --recursive
+
+# Save transcript for debugging
+./run.sh /path/to/video.mkv --dry-run --transcript transcript.txt
 
 # Verbose output
-python profanity_filter.py movie.mkv -v
+./run.sh /path/to/video.mkv -v
 ```
 
-### Error Handling
-- Check ffmpeg installed and in PATH
-- Verify input file exists and is valid video
-- Handle Whisper model download on first run
-- Check disk space before processing
-- Graceful failure with clear error messages
+**Important:** Always use `./run.sh` instead of calling Python directly - it sets `LD_LIBRARY_PATH` for CUDA/cuDNN libraries installed via pip.
 
-### Example Profanity Words File
+## Architecture
+
+Single-file Python script (`profanity_filter.py`) with linear processing pipeline:
+
+1. **Audio extraction** - ffmpeg extracts audio track to temp WAV (16kHz mono)
+2. **Transcription** - faster-whisper generates word-level timestamps
+3. **Profanity matching** - Regex patterns from `en.json` matched against words
+4. **Filter generation** - Builds ffmpeg volume filter string with mute ranges
+5. **Remuxing** - Adds clean audio track to original video file (in-place modification)
+
+### Key Functions
+
+- `pattern_to_regex()` - Converts profanity list wildcards (`fu*ck`) to regex (`fu+ck`)
+- `load_profanity_list()` - Loads `en.json`, filters by severity, compiles regex patterns
+- `match_profanity()` - Matches transcribed words against compiled patterns
+- `build_ffmpeg_filter()` - Generates ffmpeg `-af` filter string with volume muting
+- `process_video()` - Main orchestration function for single video
+
+### Profanity List Format (en.json)
+
+```json
+{
+  "id": "fuck",
+  "match": "fu*c*k|fucks|fu*c*king",  // pipe-separated, * = repeat prev char
+  "severity": 4,                       // 1-4 scale
+  "tags": ["general"]
+}
 ```
-# profanity_words.txt (one word per line)
-damn
-hell
-crap
-# Add more as needed
-```
 
-### Success Criteria
-- Successfully processes a test video file
-- Accurately detects and mutes profanity
-- Creates working audio track in Emby
-- Clean, readable code with comments
-- Basic error handling implemented
+The `*` wildcard means "one or more of previous character" (e.g., `fu*ck` matches `fuck`, `fuuck`, `fuuuck`).
 
-### Optional Enhancements (mention but don't require initially)
-- Progress bars (tqdm)
-- Multiple language support
-- GPU acceleration
-- Resume interrupted processing
-- Integration with Emby API
+## Configuration (config.yaml)
+
+Key settings:
+- `whisper_device: "cuda"` - Use GPU (requires cuDNN via `pip install nvidia-cudnn-cu12`)
+- `min_severity: 3` - Only filter severity 3+ (strong profanity)
+- `volume_boost: 2.0` - Boost clean track volume (compensates for quieter output)
+- `padding_before_ms/padding_after_ms` - Silence padding around detected words
