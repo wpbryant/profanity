@@ -38,28 +38,35 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
 
 ## Usage
 
-### Basic usage
+### CPU Mode
+
+```bash
+source venv/bin/activate
+python profanity_filter.py /path/to/video.mkv
+```
+
+### GPU Mode (CUDA)
+
+Use the wrapper script which sets up cuDNN library paths:
 
 ```bash
 ./run.sh /path/to/video.mkv
 ```
 
-### Dry run (preview detections without modifying files)
+### Other Options
 
 ```bash
-./run.sh /path/to/video.mkv --dry-run
-```
+# Dry run - preview detections without modifying files
+python profanity_filter.py /path/to/video.mkv --dry-run
 
-### Batch process a directory
+# Batch process a directory
+python profanity_filter.py /path/to/videos/ --recursive
 
-```bash
-./run.sh /path/to/videos/ --recursive
-```
+# Save transcript for debugging
+python profanity_filter.py /path/to/video.mkv --dry-run --transcript transcript.txt
 
-### Save transcript for debugging
-
-```bash
-./run.sh /path/to/video.mkv --dry-run --transcript transcript.txt
+# Verbose output
+python profanity_filter.py /path/to/video.mkv -v
 ```
 
 ## Configuration
@@ -98,8 +105,6 @@ The included `en.json` contains 400+ English profanity entries with:
 - Pattern matching for variations
 - Categories (general, sexual, racial, etc.)
 
-Sourced from [dsojevic/profanity-list](https://github.com/dsojevic/profanity-list).
-
 You can customize severities or add entries as needed.
 
 ## How It Works
@@ -115,6 +120,11 @@ You can customize severities or add entries as needed.
 
 - The original video file is modified in-place with the new audio track
 - A `.profanity.log` file is created with detection details
+
+## Credits
+
+- Profanity word list from [dsojevic/profanity-list](https://github.com/dsojevic/profanity-list)
+- Speech-to-text powered by [faster-whisper](https://github.com/guillaumekln/faster-whisper)
 
 ## License
 
