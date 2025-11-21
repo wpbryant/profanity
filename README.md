@@ -1,0 +1,121 @@
+# Audio Profanity Filter
+
+A Python tool that generates "clean" audio tracks for video files by detecting and muting profanity using Whisper speech-to-text and ffmpeg.
+
+## Features
+
+- Automatic speech-to-text transcription using [faster-whisper](https://github.com/guillaumekln/faster-whisper)
+- Configurable profanity detection with severity levels
+- Adds a separate "Clean" audio track to your video files
+- GPU acceleration support (CUDA)
+- Batch processing for multiple files
+
+## Requirements
+
+- Python 3.10+
+- ffmpeg (must be in PATH)
+- NVIDIA GPU (optional, for faster processing)
+
+## Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/profanity-filter.git
+   cd profanity-filter
+   ```
+
+2. Create a virtual environment and install dependencies:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. For GPU support, install cuDNN:
+   ```bash
+   pip install nvidia-cudnn-cu12
+   ```
+
+## Usage
+
+### Basic usage
+
+```bash
+./run.sh /path/to/video.mkv
+```
+
+### Dry run (preview detections without modifying files)
+
+```bash
+./run.sh /path/to/video.mkv --dry-run
+```
+
+### Batch process a directory
+
+```bash
+./run.sh /path/to/videos/ --recursive
+```
+
+### Save transcript for debugging
+
+```bash
+./run.sh /path/to/video.mkv --dry-run --transcript transcript.txt
+```
+
+## Configuration
+
+Edit `config.yaml` to customize behavior:
+
+```yaml
+# Whisper settings
+whisper_model: "base"    # tiny, base, small, medium, large
+whisper_device: "cuda"   # cuda or cpu
+
+# Filtering settings
+padding_before_ms: 100   # silence padding before profanity
+padding_after_ms: 150    # silence padding after profanity
+min_severity: 3          # 1=all, 2=moderate+, 3=strong+, 4=severe only
+
+# Audio settings
+clean_track_title: "English (Clean)"
+volume_boost: 2.0        # boost clean track volume (1.0 = no change)
+```
+
+### Whisper Models
+
+| Model | Size | Speed | Accuracy |
+|-------|------|-------|----------|
+| tiny | 39M | Fastest | Lower |
+| base | 74M | Fast | Good |
+| small | 244M | Medium | Better |
+| medium | 769M | Slow | High |
+| large | 1550M | Slowest | Highest |
+
+## Profanity List
+
+The included `en.json` contains 400+ English profanity entries with:
+- Severity levels (1-4)
+- Pattern matching for variations
+- Categories (general, sexual, racial, etc.)
+
+Sourced from [dsojevic/profanity-list](https://github.com/dsojevic/profanity-list).
+
+You can customize severities or add entries as needed.
+
+## How It Works
+
+1. Extracts audio from video file
+2. Transcribes speech using Whisper with word-level timestamps
+3. Matches words against profanity list using regex patterns
+4. Generates ffmpeg filter to mute detected segments
+5. Creates clean audio track with muted profanity
+6. Adds clean track to original video file
+
+## Output
+
+- The original video file is modified in-place with the new audio track
+- A `.profanity.log` file is created with detection details
+
+## License
+
+MIT
