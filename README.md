@@ -107,8 +107,17 @@ min_severity: 3          # 1=all, 2=moderate+, 3=strong+, 4=severe only
 
 # Audio settings
 clean_track_title: "English (Clean)"
+clean_track_mode: "default"  # add, default, or replace
 volume_boost: 2.0        # boost clean track volume (1.0 = no change)
 ```
+
+### Clean Track Modes
+
+| Mode | Behavior |
+|------|----------|
+| `add` | Adds clean track as an extra audio track |
+| `default` | Adds clean track and sets it as the default selection |
+| `replace` | Removes original audio, only keeps clean version |
 
 ### Whisper Models
 

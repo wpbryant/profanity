@@ -14,4 +14,5 @@ log_detections: true
 # Audio settings
 audio_track_index: 0  # which audio track to process
 clean_track_title: "English (Clean)"
+clean_track_mode: "default"  # add=extra track, default=extra track set as default, replace=remove original
 volume_boost: 2.0  # boost clean audio volume (1.0 = no change, 2.0 = 2x louder)

@@ -1707,7 +1707,7 @@
   },
   {
     "id": "fuck",
-    "match": "fu*c*k|fucks|fu*c*ken|fu*c*ker|fu*ckers|fu*c*kin|fu*c*king",
+    "match": "fu*c*k|fucks|fu*c*ked|fu*c*ken|fu*c*ker|fu*ckers|fu*c*kin|fu*c*king",
     "tags": [
       "general"
     ],

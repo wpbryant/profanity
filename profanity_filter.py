@@ -46,6 +46,7 @@ def load_config(config_path: Path) -> dict:
         "log_detections": True,
         "audio_track_index": 0,
         "clean_track_title": "English (Clean)",
+        "clean_track_mode": "add",  # add, default, or replace
     }
 
     if config_path.exists():
@@ -317,9 +318,15 @@ def remux_video(
     original_video: Path,
     clean_audio: Path,
     output_video: Path,
-    track_title: str = "English (Clean)"
+    track_title: str = "English (Clean)",
+    mode: str = "add"
 ) -> None:
-    """Add clean audio track to video file."""
+    """Add clean audio track to video file.
+
+    Args:
+        mode: "add" = extra track, "default" = extra track set as default,
+              "replace" = remove original audio
+    """
     # Get number of existing streams
     probe_cmd = [
         "ffprobe",
@@ -332,18 +339,42 @@ def remux_video(
     streams = json.loads(result.stdout).get("streams", [])
     num_audio_streams = sum(1 for s in streams if s["codec_type"] == "audio")
 
-    cmd = [
-        "ffmpeg",
-        "-i", str(original_video),
-        "-i", str(clean_audio),
-        "-map", "0",  # Copy all streams from original
-        "-map", "1:a",  # Add clean audio
-        "-c", "copy",  # Copy all codecs
-        "-c:a:" + str(num_audio_streams), "aac",  # Encode new audio as AAC
-        "-metadata:s:a:" + str(num_audio_streams), f"title={track_title}",
-        "-y",
-        str(output_video),
-    ]
+    if mode == "replace":
+        # Replace original audio - map video, subtitles, and clean audio only
+        cmd = [
+            "ffmpeg",
+            "-i", str(original_video),
+            "-i", str(clean_audio),
+            "-map", "0:v",  # Video streams
+            "-map", "0:s?",  # Subtitle streams (if any)
+            "-map", "1:a",  # Clean audio only
+            "-c", "copy",  # Copy all codecs
+            "-c:a:0", "aac",  # Encode clean audio as AAC
+            "-metadata:s:a:0", f"title={track_title}",
+            "-disposition:a:0", "default",
+            "-y",
+            str(output_video),
+        ]
+    else:
+        # "add" or "default" - keep original audio and add clean track
+        cmd = [
+            "ffmpeg",
+            "-i", str(original_video),
+            "-i", str(clean_audio),
+            "-map", "0",  # Copy all streams from original
+            "-map", "1:a",  # Add clean audio
+            "-c", "copy",  # Copy all codecs
+            "-c:a:" + str(num_audio_streams), "aac",  # Encode new audio as AAC
+            "-metadata:s:a:" + str(num_audio_streams), f"title={track_title}",
+        ]
+
+        if mode == "default":
+            # Set clean track as default, remove default from others
+            for i in range(num_audio_streams):
+                cmd.extend([f"-disposition:a:{i}", "0"])
+            cmd.extend([f"-disposition:a:{num_audio_streams}", "default"])
+
+        cmd.extend(["-y", str(output_video)])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -458,7 +489,7 @@ def process_video(
         # Remux video - write to temp file first, then replace original
         log.info("Adding clean audio track to video...")
         temp_output = temp_path / f"output{video_path.suffix}"
-        remux_video(video_path, clean_audio, temp_output, config["clean_track_title"])
+        remux_video(video_path, clean_audio, temp_output, config["clean_track_title"], config["clean_track_mode"])
 
         # Replace original with new file
         log.info("Replacing original file...")
