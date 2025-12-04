@@ -1,5 +1,5 @@
 # Whisper settings
-whisper_model: "base"  # tiny, base, small, medium, large
+whisper_model: "medium"  # tiny, base, small, medium, large
 whisper_device: "cuda"  # or "cpu" for CPU
 
 # Filtering settings
