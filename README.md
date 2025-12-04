@@ -81,6 +81,9 @@ run.bat C:\path\to\video.mkv
 # Dry run - preview detections without modifying files
 python profanity_filter.py /path/to/video.mkv --dry-run
 
+# Replace previously added clean tracks (re-run with different config)
+python profanity_filter.py /path/to/video.mkv --replace-clean
+
 # Batch process a directory
 python profanity_filter.py /path/to/videos/ --recursive
 
