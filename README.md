@@ -35,14 +35,27 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
    ```
 
    **Windows:**
+
+   **Important:** Windows users should use Python 3.11 or 3.12. Python 3.14+ may have compatibility issues with PyAV.
+
    ```cmd
-   python -m venv venv
+   # Use Python 3.11 or 3.12
+   py -3.11 -m venv venv
+   # or: py -3.12 -m venv venv
+
    venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r requirements-windows.txt
    ```
 
 3. **For NVIDIA GPU support only**, install cuDNN:
+
+   **Linux/macOS:**
    ```bash
+   pip install nvidia-cudnn-cu12
+   ```
+
+   **Windows:**
+   ```cmd
    pip install nvidia-cudnn-cu12
    ```
 
@@ -134,6 +147,56 @@ volume_boost: 2.0        # boost clean track volume (1.0 = no change)
 | small | 244M | Medium | Better |
 | medium | 769M | Slow | High |
 | large | 1550M | Slowest | Highest |
+
+## Windows Troubleshooting
+
+### Python Version Compatibility
+
+**Issue:** Installation fails with build errors for `av` (PyAV) or `onnxruntime`
+
+**Symptoms:**
+```
+ERROR: Failed to build 'av' when getting requirements to build wheel
+ERROR: No matching distribution found for onnxruntime
+```
+
+**Solution:** Use Python 3.11 or 3.12 (not 3.14+)
+
+Python 3.14 and newer versions don't have pre-built wheels for all dependencies on Windows. Download Python 3.11 or 3.12 from [python.org/downloads](https://www.python.org/downloads/) and recreate your virtual environment:
+
+```cmd
+# Remove old venv
+rmdir /s venv
+
+# Create new venv with Python 3.11 or 3.12
+py -3.12 -m venv venv
+
+# Activate and install
+venv\Scripts\activate
+pip install -r requirements-windows.txt
+```
+
+### ffmpeg Requirement
+
+**Issue:** `ffmpeg` not found or video processing fails
+
+**Solution:** Install ffmpeg and add it to your PATH
+
+1. Download ffmpeg from [ffmpeg.org](https://ffmpeg.org/download.html)
+2. Extract the archive and add the `bin` folder to your system PATH
+3. Verify installation: `ffmpeg -version`
+
+### Using CPU Mode
+
+If you have an AMD GPU or encounter CUDA issues, use CPU mode:
+
+1. Edit `config.yaml` and set `whisper_device: "cpu"`
+2. Skip the cuDNN installation step
+3. Use the regular Python command instead of `run.bat`:
+   ```cmd
+   venv\Scripts\activate
+   python profanity_filter.py C:\path\to\video.mkv
+   ```
 
 ## Profanity List
 

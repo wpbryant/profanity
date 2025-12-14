@@ -1,0 +1,8 @@
+# Windows-compatible requirements with version pins
+# These versions have pre-built wheels for Windows Python 3.11/3.12
+faster-whisper==1.0.3
+av==12.0.0  # Has Windows wheels for py3.11/3.12
+ctranslate2>=4.0,<5
+huggingface-hub>=0.21
+tokenizers>=0.13,<1
+pyyaml>=6.0
