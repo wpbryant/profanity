@@ -5,4 +5,5 @@ av==12.0.0  # Has Windows wheels for py3.11/3.12
 ctranslate2>=4.0,<5
 huggingface-hub>=0.21
 tokenizers>=0.13,<1
+requests>=2.31.0
 pyyaml>=6.0
