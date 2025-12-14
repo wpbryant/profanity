@@ -14,14 +14,15 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
 
 - Python 3.10+
 - ffmpeg (must be in PATH)
-- NVIDIA GPU (optional, for faster processing)
+- NVIDIA GPU with CUDA support (optional, for faster processing)
+  - **Note:** AMD GPUs are not supported for acceleration - AMD users should use CPU mode
 
 ## Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/profanity-filter.git
-   cd profanity-filter
+   git clone https://github.com/wpbryant/profanity.git
+   cd profanity
    ```
 
 2. Create a virtual environment and install dependencies:
@@ -40,10 +41,12 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
    pip install -r requirements.txt
    ```
 
-3. For GPU support, install cuDNN:
+3. **For NVIDIA GPU support only**, install cuDNN:
    ```bash
    pip install nvidia-cudnn-cu12
    ```
+
+   **AMD GPU users:** Skip this step and use CPU mode (see Configuration section to set `whisper_device: "cpu"`)
 
 ## Usage
 
@@ -61,9 +64,9 @@ venv\Scripts\activate
 python profanity_filter.py C:\path\to\video.mkv
 ```
 
-### GPU Mode (CUDA)
+### GPU Mode (NVIDIA CUDA only)
 
-Use the wrapper script which sets up cuDNN library paths:
+**NVIDIA GPU users only** - Use the wrapper script which sets up cuDNN library paths:
 
 **Linux/macOS:**
 ```bash
