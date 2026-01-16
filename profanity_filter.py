@@ -24,11 +24,22 @@ from faster_whisper import WhisperModel
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Configure logging."""
     level = logging.DEBUG if verbose else logging.INFO
+    
+    # File handler (append mode, full date)
+    file_handler = logging.FileHandler("profanity_filter.log", mode='a')
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    
+    # Console handler (time only)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S"))
+
+    # Configure root logger with both handlers
     logging.basicConfig(
         level=level,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%H:%M:%S",
+        handlers=[console_handler, file_handler],
+        force=True  # Ensure we override any previous config
     )
+    
     return logging.getLogger(__name__)
 
 
