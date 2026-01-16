@@ -170,6 +170,16 @@ def get_audio_info(video_path: Path) -> dict:
     return data.get("streams", [])
 
 
+def get_english_track_index(streams: list[dict]) -> int:
+    """Find index of first English audio track. Returns -1 if not found."""
+    for i, stream in enumerate(streams):
+        tags = stream.get("tags", {})
+        language = tags.get("language", "").lower()
+        if language in ("eng", "en", "english"):
+            return i
+    return -1
+
+
 def extract_audio(
     video_path: Path,
     output_path: Path,
@@ -498,12 +508,66 @@ def process_video(
     dry_run: bool = False,
     transcript_path: Path = None,
     replace_clean: bool = False,
+    skip_clean: bool = False,
     logger: logging.Logger = None
 ) -> dict:
     """Process a single video file."""
     log = logger or logging.getLogger(__name__)
 
     log.info(f"Processing: {video_path.name}")
+
+    # Get audio stream info early
+    try:
+        audio_streams = get_audio_info(video_path)
+    except Exception as e:
+        log.error(f"Failed to get audio info: {e}")
+        return {}
+
+    # Check for existing clean track
+    clean_title = config["clean_track_title"]
+    existing_clean_track = False
+    for stream in audio_streams:
+        if stream.get("tags", {}).get("title") == clean_title:
+            existing_clean_track = True
+            break
+    
+    if existing_clean_track:
+        if replace_clean:
+            log.info("Found existing clean track - overwriting due to --replace-clean")
+        elif skip_clean:
+            log.info("Found existing clean track - skipping due to --skip-clean")
+            return {}
+        elif not dry_run:
+            # Interactive prompt
+            print(f"\nExisting clean track found in: {video_path.name}")
+            print("1. Overwrite existing track")
+            print("2. Skip file")
+            print("3. Create new track (duplicate)")
+            while True:
+                choice = input("Select an option [1-3]: ").strip()
+                if choice == "1":
+                    replace_clean = True
+                    log.info("User selected: Overwrite")
+                    break
+                elif choice == "2":
+                    log.info("User selected: Skip")
+                    return {}
+                elif choice == "3":
+                    log.info("User selected: Create new track")
+                    break
+                
+    # Determine audio track to process
+    track_index = config["audio_track_index"]
+    if track_index == 0:
+        # Try to find English track automatically
+        eng_index = get_english_track_index(audio_streams)
+        if eng_index != -1:
+            track_index = eng_index
+            log.info(f"Automatically selected English audio track at index {track_index}")
+        else:
+            log.info(f"No English track found, using default index {track_index}")
+    else:
+        log.info(f"Using configured audio track index {track_index}")
 
     # Create temp directory for intermediate files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -514,7 +578,7 @@ def process_video(
 
         # Extract mono audio for Whisper transcription
         log.info("Extracting audio for transcription...")
-        extract_audio(video_path, audio_for_transcription, config["audio_track_index"], for_transcription=True)
+        extract_audio(video_path, audio_for_transcription, track_index, for_transcription=True)
 
         # Transcribe
         words = transcribe_audio(
@@ -562,7 +626,7 @@ def process_video(
 
         # Extract full quality audio (preserves original channels: stereo, 5.1, etc.)
         log.info("Extracting full quality audio...")
-        extract_audio(video_path, audio_full_quality, config["audio_track_index"], for_transcription=False)
+        extract_audio(video_path, audio_full_quality, track_index, for_transcription=False)
 
         # Create clean audio with muted profanity
         log.info("Creating clean audio track...")
@@ -603,13 +667,13 @@ def main():
         help="Video file or directory to process",
     )
     parser.add_argument(
-        "--config",
+        "--config", "-c",
         type=Path,
         default=Path("config.yaml"),
         help="Configuration file (default: config.yaml)",
     )
     parser.add_argument(
-        "--dry-run",
+        "--dry-run", "-d",
         action="store_true",
         help="Show detections without creating output files",
     )
@@ -624,14 +688,20 @@ def main():
         help="Enable verbose output",
     )
     parser.add_argument(
-        "--transcript",
+        "--transcript", "-t",
         type=Path,
         help="Save transcript to file (for debugging)",
     )
     parser.add_argument(
-        "--replace-clean",
+        "--replace-clean", "-o",
         action="store_true",
-        help="Remove previously added clean tracks before adding new one",
+        help="Remove previously added clean tracks before adding new one (overwrite)",
+    )
+
+    parser.add_argument(
+        "--skip-clean", "-s",
+        action="store_true",
+        help="Skip files that already have a clean audio track",
     )
 
     args = parser.parse_args()
@@ -686,7 +756,7 @@ def main():
     # Process each file
     for video_path in files_to_process:
         try:
-            process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, logger)
+            process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, args.skip_clean, logger)
         except Exception as e:
             logger.error(f"Failed to process {video_path}: {e}")
             if args.verbose:
