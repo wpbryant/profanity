@@ -420,6 +420,7 @@ def remux_video(
             "-c:a:0", "aac",  # Encode clean audio as AAC
             "-metadata:s:a:0", f"title={track_title}",
             "-metadata:s:a:0", f"handler_name={track_title}",
+            "-metadata:s:a:0", "language=eng",
             "-disposition:a:0", "default",
             "-y",
             str(output_video),
@@ -461,6 +462,7 @@ def remux_video(
                 f"-c:a:{kept_audio_count}", "aac",
                 f"-metadata:s:a:{kept_audio_count}", f"title={track_title}",
                 f"-metadata:s:a:{kept_audio_count}", f"handler_name={track_title}",
+                f"-metadata:s:a:{kept_audio_count}", "language=eng",
             ])
 
             if mode == "default":
@@ -483,6 +485,7 @@ def remux_video(
                 "-c:a:" + str(num_audio_streams), "aac",  # Encode new audio as AAC
                 "-metadata:s:a:" + str(num_audio_streams), f"title={track_title}",
                 "-metadata:s:a:" + str(num_audio_streams), f"handler_name={track_title}",
+                "-metadata:s:a:" + str(num_audio_streams), "language=eng",
             ]
 
             if mode == "default":
