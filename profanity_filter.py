@@ -21,22 +21,31 @@ import yaml
 from faster_whisper import WhisperModel
 
 
-def setup_logging(verbose: bool = False) -> logging.Logger:
+def setup_logging(verbose: bool = False, log_dir: Path = None) -> logging.Logger:
     """Configure logging."""
     level = logging.DEBUG if verbose else logging.INFO
     
-    # File handler (append mode, full date)
-    file_handler = logging.FileHandler("profanity_filter.log", mode='a')
-    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    handlers = []
     
     # Console handler (time only)
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S"))
+    handlers.append(console_handler)
+
+    # File handler (append mode, full date) - only if log_dir provided
+    if log_dir:
+        try:
+            log_file = log_dir / "profanity_filter.log"
+            file_handler = logging.FileHandler(log_file, mode='a')
+            file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+            handlers.append(file_handler)
+        except Exception as e:
+            print(f"Warning: Failed to create log file in {log_dir}: {e}")
 
     # Configure root logger with both handlers
     logging.basicConfig(
         level=level,
-        handlers=[console_handler, file_handler],
+        handlers=handlers,
         force=True  # Ensure we override any previous config
     )
     
@@ -815,7 +824,12 @@ def main():
 
     args = parser.parse_args()
 
-    logger = setup_logging(args.verbose)
+    # Determine log directory based on input
+    log_dir = None
+    if args.input.exists():
+        log_dir = args.input if args.input.is_dir() else args.input.parent
+
+    logger = setup_logging(args.verbose, log_dir)
 
     # Check dependencies
     if not check_dependencies():
