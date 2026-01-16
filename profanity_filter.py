@@ -77,7 +77,7 @@ def pattern_to_regex(pattern: str) -> str:
     return ''.join(result)
 
 
-def load_profanity_list(profanity_path: Path, min_severity: int = 1) -> list[dict]:
+def load_profanity_list(profanity_path: Path, min_severity: int = 1) -> tuple[list[dict], re.Pattern]:
     """Load profanity list from JSON file."""
     with open(profanity_path, "r") as f:
         profanity_data = json.load(f)
@@ -107,7 +107,37 @@ def load_profanity_list(profanity_path: Path, min_severity: int = 1) -> list[dic
                 "tags": entry.get("tags", []),
             })
 
-    return filtered
+    # Create combined regex for pre-filtering (optimization)
+    all_regex_patterns = []
+    for entry in filtered:
+        # entry["regex"] is already compiled, get the pattern string
+        # pattern is wrapped in \b(  )\b due to line 98
+        # We need the inner parts.
+        # But actually, line 98 does: r'\b(' + '|'.join(regex_patterns) + r')\b'
+        # So we can just re-use the raw regex patterns from earlier?
+        # We didn't save them.
+        # Let's rebuild the simple list of all patterns
+        # effectively we want: \b(pattern1|pattern2|...)\b
+        # We can just join all patterns from all entries.
+        
+        # entry['patterns'] has the raw patterns. 
+        # We need to run pattern_to_regex on all of them again? 
+        # Or store them.
+        
+        # Let's iterate through filtered again
+        pass
+
+    all_patterns_regex = []
+    for entry in filtered:
+        for p in entry["patterns"]:
+            all_patterns_regex.append(pattern_to_regex(p))
+
+    combined_regex = re.compile(
+        r'\b(' + '|'.join(all_patterns_regex) + r')\b',
+        re.IGNORECASE
+    )
+
+    return filtered, combined_regex
 
 
 def check_dependencies() -> bool:
@@ -209,7 +239,8 @@ def transcribe_audio(
 
 def match_profanity(
     words: list[dict],
-    profanity_list: list[dict]
+    profanity_list: list[dict],
+    combined_regex: re.Pattern
 ) -> list[dict]:
     """Match transcribed words against profanity list using regex."""
     detections = []
@@ -217,6 +248,10 @@ def match_profanity(
     # Check each word against all profanity patterns
     for word_info in words:
         word_clean = word_info["word"].strip(".,!?;:'\"")
+        
+        # Optimization: Quick check with combined regex
+        if not combined_regex.search(word_clean):
+            continue
 
         for entry in profanity_list:
             if entry["regex"].search(word_clean):
@@ -459,6 +494,7 @@ def process_video(
     video_path: Path,
     config: dict,
     profanity_list: list[dict],
+    combined_regex: re.Pattern,
     dry_run: bool = False,
     transcript_path: Path = None,
     replace_clean: bool = False,
@@ -496,7 +532,7 @@ def process_video(
 
         # Match profanity
         log.info("Detecting profanity...")
-        detections = match_profanity(words, profanity_list)
+        detections = match_profanity(words, profanity_list, combined_regex)
         log.info(f"Found {len(detections)} profanity instances")
 
         # Build mute ranges
@@ -617,7 +653,7 @@ def main():
         logger.error(f"Profanity file not found: {profanity_path}")
         sys.exit(1)
 
-    profanity_list = load_profanity_list(profanity_path, config["min_severity"])
+    profanity_list, combined_regex = load_profanity_list(profanity_path, config["min_severity"])
     logger.info(f"Loaded {len(profanity_list)} profanity entries (severity >= {config['min_severity']})")
 
     # Get list of files to process
@@ -650,7 +686,7 @@ def main():
     # Process each file
     for video_path in files_to_process:
         try:
-            process_video(video_path, config, profanity_list, args.dry_run, args.transcript, args.replace_clean, logger)
+            process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, logger)
         except Exception as e:
             logger.error(f"Failed to process {video_path}: {e}")
             if args.verbose:

@@ -17,6 +17,7 @@ transcript.txt
 # IDE
 .vscode/
 .idea/
+.continue/
 
 # OS
 .DS_Store
