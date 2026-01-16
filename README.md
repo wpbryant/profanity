@@ -3,12 +3,14 @@
 A Python tool that generates "clean" audio tracks for video files by detecting and muting profanity using Whisper speech-to-text and ffmpeg.
 
 ## Features
-
-- Automatic speech-to-text transcription using [faster-whisper](https://github.com/guillaumekln/faster-whisper)
-- Configurable profanity detection with severity levels
-- Adds a separate "Clean" audio track to your video files
-- GPU acceleration support (CUDA)
-- Batch processing for multiple files
+- **High Performance**: Optimized matching algorithm (~10x faster)
+- **Automatic Speech-to-Text**: Transcription using [faster-whisper](https://github.com/guillaumekln/faster-whisper)
+- **Smart Audio Selection**: Automatically detects and processes English audio tracks
+- **Interactive Mode**: Prompts to overwrite, skip, or duplicate if a clean track already exists
+- **Track Cleanup**: Utility to remove duplicate/unwanted audio tracks
+- **Persistent Logging**: Keeps a history of all runs in `profanity_filter.log`
+- **GPU Acceleration**: CUDA support for fast transcription
+- **Batch Processing**: Recursively process videos with `--recursive`
 
 ## Requirements
 
@@ -91,23 +93,37 @@ python profanity_filter.py C:\path\to\video.mkv
 run.bat C:\path\to\video.mkv
 ```
 
-### Other Options
+### Command Line Options
+| Flag | Shorthand | Description |
+|:---|:---|:---|
+| `--recursive` | `-r` | Process directories recursively |
+| `--dry-run` | `-d` | Preview detections without modifying files (fast) |
+| `--skip-clean` | `-s` | Skip files that already have a clean track |
+| `--replace-clean` | `-o` | Overwrite existing clean tracks (force) |
+| `--cleanup` | | Interactive mode to remove duplicate/spam tracks |
+| `--config` | `-c` | Specify custom config file |
+| `--verbose` | `-v` | Enable verbose logging |
 
+### Examples
+
+**Standard Run:**
 ```bash
-# Dry run - preview detections without modifying files
-python profanity_filter.py /path/to/video.mkv --dry-run
+python profanity_filter.py /path/to/video.mkv
+```
 
-# Replace previously added clean tracks (re-run with different config)
-python profanity_filter.py /path/to/video.mkv --replace-clean
+**Recursively Process Directory (Skip Existing):**
+```bash
+python profanity_filter.py /path/to/videos/ -r -s
+```
 
-# Batch process a directory
-python profanity_filter.py /path/to/videos/ --recursive
+**Cleanup Duplicate Tracks:**
+```bash
+python profanity_filter.py /path/to/videos/ -r --cleanup
+```
 
-# Save transcript for debugging
-python profanity_filter.py /path/to/video.mkv --dry-run --transcript transcript.txt
-
-# Verbose output
-python profanity_filter.py /path/to/video.mkv -v
+**Dry Run with Verbose Logging:**
+```bash
+python profanity_filter.py /path/to/video.mkv -d -v
 ```
 
 ## Configuration
@@ -207,8 +223,23 @@ The included `en.json` contains 400+ English profanity entries with:
 
 You can customize severities or add entries as needed.
 
-## How It Works
+## Key Behaviors
 
+### Smart Audio Selection
+The script automatically detects and selects the English audio track (tagged `eng`, `en`, `english`).
+- If multiple English tracks exist, it selects the first one.
+- If no English track is found, it falls back to the configured `audio_track_index` (default: 0).
+
+### Interactive Safety Checks
+If a file already has a "Clean" audio track:
+- **Interactive**: Pauses and asks you to [Overwrite], [Skip], or [Create New].
+- **Batch (`-s`)**: Automatically skips the file.
+- **Force (`-o`)**: Automatically overwrites the existing track.
+
+### Persistent Logging
+Logs are saved to `profanity_filter.log` in the same directory as your video files. This file is **append-only**, keeping a history of all runs for debugging.
+
+## How It Works
 1. Extracts audio from video file
 2. Transcribes speech using Whisper with word-level timestamps
 3. Matches words against profanity list using regex patterns
@@ -219,7 +250,8 @@ You can customize severities or add entries as needed.
 ## Output
 
 - The original video file is modified in-place with the new audio track
-- A `.profanity.log` file is created with detection details
+- A `.profanity.log` file is created for each video with detection details
+- A `profanity_filter.log` is appended to in the video directory (global run history)
 
 ## Credits
 
