@@ -397,7 +397,9 @@ def remux_video(
             "-map", "1:a",  # Clean audio only
             "-c", "copy",  # Copy all codecs
             "-c:a:0", "aac",  # Encode clean audio as AAC
+            "-c:a:0", "aac",  # Encode clean audio as AAC
             "-metadata:s:a:0", f"title={track_title}",
+            "-metadata:s:a:0", f"handler_name={track_title}",
             "-disposition:a:0", "default",
             "-y",
             str(output_video),
@@ -436,7 +438,9 @@ def remux_video(
             cmd.extend([
                 "-c", "copy",
                 f"-c:a:{kept_audio_count}", "aac",
+                f"-c:a:{kept_audio_count}", "aac",
                 f"-metadata:s:a:{kept_audio_count}", f"title={track_title}",
+                f"-metadata:s:a:{kept_audio_count}", f"handler_name={track_title}",
             ])
 
             if mode == "default":
@@ -456,7 +460,9 @@ def remux_video(
                 "-map", "1:a",  # Add clean audio
                 "-c", "copy",  # Copy all codecs
                 "-c:a:" + str(num_audio_streams), "aac",  # Encode new audio as AAC
+                "-c:a:" + str(num_audio_streams), "aac",  # Encode new audio as AAC
                 "-metadata:s:a:" + str(num_audio_streams), f"title={track_title}",
+                "-metadata:s:a:" + str(num_audio_streams), f"handler_name={track_title}",
             ]
 
             if mode == "default":
@@ -527,7 +533,10 @@ def process_video(
     clean_title = config["clean_track_title"]
     existing_clean_track = False
     for stream in audio_streams:
-        if stream.get("tags", {}).get("title") == clean_title:
+        tags = stream.get("tags", {})
+        title = tags.get("title")
+        handler = tags.get("handler_name")
+        if clean_title == title or clean_title == handler:
             existing_clean_track = True
             break
     
@@ -657,6 +666,89 @@ def process_video(
         }
 
 
+def cleanup_tracks(video_path: Path, config: dict, logger: logging.Logger = None) -> None:
+    """Interactively cleanup audio tracks."""
+    log = logger or logging.getLogger(__name__)
+    
+    try:
+        streams = get_audio_info(video_path)
+    except Exception as e:
+        log.error(f"Failed to read audio info for {video_path}: {e}")
+        return
+
+    if len(streams) <= 1:
+        log.info(f"Skipping {video_path.name}: Only 1 audio track")
+        return
+
+    print(f"\nScanning: {video_path.name}")
+    print("Found audio tracks:")
+    print(f"{'Idx':<5} {'Lang':<10} {'Title/Handler':<30} {'Codec':<10}")
+    print("-" * 60)
+    
+    for i, s in enumerate(streams):
+        tags = s.get("tags", {})
+        lang = tags.get("language", "und")
+        title = tags.get("title") or tags.get("handler_name", "N/A")
+        codec = s.get("codec_name", "unknown")
+        print(f"{i:<5} {lang:<10} {title[:30]:<30} {codec:<10}")
+
+    print("-" * 60)
+    print("Options:")
+    print(" - Enter comma-separated indices to KEEP (e.g. '0,2')")
+    print(" - 'a' or 'all' to keep all (skip)")
+    print(" - 's' or 'skip' to skip")
+    
+    choice = input("Keep tracks: ").strip().lower()
+    
+    if choice in ('a', 'all', 's', 'skip', ''):
+        log.info("Skipping cleanup")
+        return
+
+    try:
+        keep_indices = [int(x.strip()) for x in choice.split(",") if x.strip()]
+    except ValueError:
+        log.error("Invalid input. Skipping.")
+        return
+    
+    if len(keep_indices) == len(streams):
+        log.info("Keeping all tracks. Skipping.")
+        return
+
+    # Sort indices to match stream order? Actually ffmpeg map order matters.
+    # We map 0:v (video), 0:s? (subtitles), and then specific audio streams.
+    
+    log.info(f"Remuxing to keep audio tracks: {keep_indices}")
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_output = Path(temp_dir) / f"cleanup_{video_path.name}"
+        
+        cmd = [
+            "ffmpeg",
+            "-i", str(video_path),
+            "-map", "0:v?",     # Video (optional)
+            "-map", "0:s?",    # Subtitles
+            "-c", "copy",      # Copy all codecs
+        ]
+        
+        # Add audio maps
+        for idx in keep_indices:
+            if 0 <= idx < len(streams):
+                cmd.extend(["-map", f"0:a:{idx}"])
+            else:
+                log.warning(f"Invalid track index {idx} ignored")
+        
+        cmd.extend(["-y", str(temp_output)])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            log.error(f"Cleanup failed: {result.stderr}")
+            return
+            
+        # Replace original
+        shutil.move(str(temp_output), str(video_path))
+        log.info(f"Cleanup complete: {video_path.name}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate clean audio tracks for videos by muting profanity"
@@ -702,6 +794,12 @@ def main():
         "--skip-clean", "-s",
         action="store_true",
         help="Skip files that already have a clean audio track",
+    )
+
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Interactive mode to cleanup duplicate audio tracks",
     )
 
     args = parser.parse_args()
@@ -753,10 +851,15 @@ def main():
 
     logger.info(f"Found {len(files_to_process)} video(s) to process")
 
+
+    
     # Process each file
     for video_path in files_to_process:
         try:
-            process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, args.skip_clean, logger)
+            if args.cleanup:
+                cleanup_tracks(video_path, config, logger)
+            else:
+                process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, args.skip_clean, logger)
         except Exception as e:
             logger.error(f"Failed to process {video_path}: {e}")
             if args.verbose:
