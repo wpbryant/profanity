@@ -18,7 +18,12 @@ import tempfile
 from pathlib import Path
 
 import yaml
-from faster_whisper import WhisperModel
+
+# faster_whisper is only needed for local transcription
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None
 
 
 def setup_logging(verbose: bool = False, log_dir: Path = None) -> logging.Logger:
@@ -57,6 +62,9 @@ def load_config(config_path: Path) -> dict:
     default_config = {
         "whisper_model": "base",
         "whisper_device": "cpu",
+        "whisper_mode": "local",  # "local" or "remote"
+        "whisper_api_url": "http://192.168.1.135:9000",
+        "whisper_api_timeout": 600,
         "padding_before_ms": 100,
         "padding_after_ms": 150,
         "profanity_file": "en.json",
@@ -241,7 +249,13 @@ def transcribe_audio(
     model_name: str = "base",
     device: str = "cpu"
 ) -> list[dict]:
-    """Transcribe audio using Whisper and return word-level timestamps."""
+    """Transcribe audio using local Whisper and return word-level timestamps."""
+    if WhisperModel is None:
+        raise RuntimeError(
+            "faster_whisper is not installed. Install it with: pip install faster-whisper\n"
+            "Or use remote transcription: --remote or whisper_mode: remote in config.yaml"
+        )
+
     logging.info(f"Loading Whisper model '{model_name}' on {device}...")
     compute_type = "float16" if device == "cuda" else "int8"
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
@@ -612,12 +626,22 @@ def process_video(
         log.info("Extracting audio for transcription...")
         extract_audio(video_path, audio_for_transcription, track_index, for_transcription=True)
 
-        # Transcribe
-        words = transcribe_audio(
-            audio_for_transcription,
-            config["whisper_model"],
-            config["whisper_device"],
-        )
+        # Transcribe (local or remote)
+        if config.get("whisper_mode") == "remote":
+            from transcribe_remote import transcribe_remote
+            log.info(f"Using remote transcription at {config['whisper_api_url']}")
+            words = transcribe_remote(
+                audio_for_transcription,
+                config["whisper_api_url"],
+                language="en",
+                timeout=config.get("whisper_api_timeout", 600),
+            )
+        else:
+            words = transcribe_audio(
+                audio_for_transcription,
+                config["whisper_model"],
+                config["whisper_device"],
+            )
 
         # Save transcript if requested
         if transcript_path:
@@ -825,6 +849,12 @@ def main():
         help="Interactive mode to cleanup duplicate audio tracks",
     )
 
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Use remote Whisper ASR webservice for transcription",
+    )
+
     args = parser.parse_args()
 
     # Determine log directory based on input
@@ -840,6 +870,8 @@ def main():
 
     # Load config
     config = load_config(args.config)
+    if args.remote:
+        config["whisper_mode"] = "remote"
     logger.debug(f"Config: {config}")
 
     # Load profanity list

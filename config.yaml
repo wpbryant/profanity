@@ -2,6 +2,11 @@
 whisper_model: "medium"  # tiny, base, small, medium, large
 whisper_device: "cuda"  # or "cpu" for CPU
 
+# Remote Whisper settings (used when whisper_mode is "remote" or --remote flag is set)
+whisper_mode: "local"  # "local" = faster-whisper on this machine, "remote" = offload to API server
+whisper_api_url: "http://192.168.1.135:9000"  # URL of whisper-asr-webservice
+whisper_api_timeout: 600  # request timeout in seconds
+
 # Filtering settings
 padding_before_ms: 100
 padding_after_ms: 150
