@@ -1714,6 +1714,14 @@
     "severity": 4
   },
   {
+    "id": "motherfucker",
+    "match": "motherfu*c*ker|motherfu*ckers|mother-fucker|mother-fuckers|mother fucker|mother fuckers|motherfu*c*kin|motherfu*c*king|mother-fucking|mother fucking",
+    "tags": [
+      "general"
+    ],
+    "severity": 4
+  },
+  {
     "id": "fuckhead",
     "match": "fuckhead|fuckheads",
     "tags": [
