@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv"
 
 # Set library paths for CUDA/cuDNN
-export LD_LIBRARY_PATH="$VENV_DIR/lib/python3.12/site-packages/nvidia/cudnn/lib:$VENV_DIR/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$VENV_DIR/lib/python3.14/site-packages/nvidia/cudnn/lib:$VENV_DIR/lib/python3.14/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH"
 
 # Prefer system ffmpeg over snap version (snap has temp directory access issues)
 export PATH="/usr/bin:/bin:$PATH"
