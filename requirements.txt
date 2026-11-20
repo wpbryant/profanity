@@ -1,5 +1,9 @@
 faster-whisper>=0.10.0
 pyyaml>=6.0
 requests>=2.28.0
-# av 17+ removed the metadata_errors kwarg that faster-whisper still passes to av.open()
-av>=14,<17
+# av 19 removed the metadata_errors kwarg that faster-whisper still passes to av.open()
+av>=14,<19
+# CUDA 12 libraries for CTranslate2 (loaded via LD_LIBRARY_PATH in run.sh);
+# cuBLAS >= 12.8 is needed for Blackwell GPUs (RTX 50 series), cuDNN 9 for CTranslate2 4.5+
+nvidia-cublas-cu12>=12.8
+nvidia-cudnn-cu12>=9
