@@ -15,6 +15,7 @@ min_severity: 3  # 1=all, 2=moderate+, 3=strong+, 4=severe only
 
 # Output settings
 log_detections: true
+tui: true  # live progress dashboard (auto-disabled when piped, with --no-tui or --verbose)
 
 # Audio settings
 audio_track_index: 0  # which audio track to process

@@ -12,6 +12,7 @@ A Python tool that generates "clean" audio tracks for video files by detecting a
 - **Persistent Logging**: Keeps a history of all runs in `profanity_filter.log`
 - **GPU Acceleration**: CUDA support for fast transcription
 - **Batch Processing**: Recursively process videos with `--recursive`
+- **Live TUI Progress**: Dashboard with overall progress bar (with ETA), per-file status, and transcription sub-progress for long runs
 
 ## Requirements
 
@@ -117,6 +118,7 @@ See [Remote Transcription](#remote-transcription) for full setup details.
 | `--skip-clean` | `-s` | Skip files that already have a clean track |
 | `--replace-clean` | `-o` | Overwrite existing clean tracks (force) |
 | `--cleanup` | | Interactive mode to remove duplicate/spam tracks |
+| `--no-tui` | | Disable the live progress display (plain log output) |
 | `--config` | `-c` | Specify custom config file |
 | `--verbose` | `-v` | Enable verbose logging |
 
@@ -152,6 +154,34 @@ python profanity_filter.py /path/to/video.mkv -d -v
 python profanity_filter.py /path/to/video.mkv -c /path/to/remote-config.yaml
 ```
 
+### Progress Display (TUI)
+
+When running in an interactive terminal (and [rich](https://github.com/Textualize/rich) is installed), the tool renders a live dashboard instead of streaming log lines:
+
+```
+ Profanity Filter — 2/8 files
+ Overall     ━━━━━━━━━━━━━━━━━╸──────  34%  ETA 12:41  1.2/3.5 GB
+ ─────────────────────────────────────────────────────────────────
+ › movie_two.mkv                                    elapsed 04:12
+   Transcribing (medium/cuda)      last: Transcribed 4102 words
+   Transcription ━━━━━━━━━╸──────  61%          32:10 / 52:40
+ ─────────────────────────────────────────────────────────────────
+ ✓  movie_one.mkv                 12 mutes              3:41
+ ✓  short_ep.mkv                   0 mutes (clean)      0:52
+ ✗  broken.mp4          failed: ffprobe failed...      0:03
+ »  skipped_one.mkv       skipped: already clean         -
+ ─────────────────────────────────────────────────────────────────
+ Mutes 12 | Done 2 | Clean 1 | Skipped 1 | Failed 0
+```
+
+- The overall bar is weighted by file size, so the ETA stays honest across mixed libraries
+- During local transcription a sub-bar tracks position in the audio; remote transcription shows a pulsing bar while elapsed time ticks
+- If a file already has a clean track (and neither `-s` nor `-o` is set), the Overwrite/Skip/Duplicate menu appears inside the display — press `1`, `2`, or `3`
+- When the run ends, a permanent per-file summary table is printed
+- Everything is still written to `profanity_filter.log` as usual
+
+The TUI is disabled automatically when output is piped (`nohup`, cron, `| tee`) or with `--verbose`, and can be turned off explicitly with `--no-tui` or in config (`tui: false`). For unattended runs, pair it with `-s` or `-o` so nothing waits for input.
+
 ## Configuration
 
 Edit `config.yaml` to customize behavior:
@@ -175,6 +205,9 @@ min_severity: 3          # 1=all, 2=moderate+, 3=strong+, 4=severe only
 clean_track_title: "English (Clean)"
 clean_track_mode: "default"  # add, default, or replace
 volume_boost: 2.0        # boost clean track volume (1.0 = no change)
+
+# Output settings
+tui: true                # live progress dashboard (auto-disabled when piped)
 ```
 
 ### Clean Track Modes
@@ -253,10 +286,16 @@ python transcribe_remote.py /path/to/audio.wav -v
 
 ### Dependencies
 
-When using remote mode, `faster-whisper` is **not required** on the local machine. The only dependency needed is `requests`:
+When using remote mode, `faster-whisper` is **not required** on the local machine. The only dependencies needed are `requests` and `pyyaml`:
 
 ```bash
 pip install requests pyyaml
+```
+
+Adding `rich` enables the live progress display (without it the tool falls back to plain log output):
+
+```bash
+pip install requests pyyaml rich
 ```
 
 ## Windows Troubleshooting

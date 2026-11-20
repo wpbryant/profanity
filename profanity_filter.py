@@ -9,12 +9,16 @@ using Whisper speech-to-text and ffmpeg.
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -24,6 +28,26 @@ try:
     from faster_whisper import WhisperModel
 except ImportError:
     WhisperModel = None
+
+# rich is only needed for the TUI progress display (optional at runtime)
+try:
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        ProgressColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeRemainingColumn,
+    )
+    from rich.rule import Rule
+    from rich.table import Table
+    from rich.text import Text
+
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
 
 def setup_logging(verbose: bool = False, log_dir: Path = None) -> logging.Logger:
@@ -75,6 +99,7 @@ def load_config(config_path: Path) -> dict:
         "audio_track_index": 0,
         "clean_track_title": "English (Clean)",
         "clean_track_mode": "add",  # add, default, or replace
+        "tui": True,
     }
 
     if config_path.exists():
@@ -83,6 +108,471 @@ def load_config(config_path: Path) -> dict:
         default_config.update(user_config)
 
     return default_config
+
+
+# -----------------------------------------------------------------------------
+# Progress reporting / TUI
+# -----------------------------------------------------------------------------
+
+# Cumulative fraction of a single file's work completed when each step begins.
+# Transcription dominates (0.07 -> 0.87); the rest are quick ffmpeg passes.
+STEP_FRACTIONS = {
+    "probe": 0.00,
+    "extract": 0.02,
+    "transcribe": 0.07,
+    "match": 0.87,
+    "extract_full": 0.88,
+    "clean": 0.91,
+    "remux": 0.95,
+}
+
+STATUS_GLYPHS = {
+    "done": ("✓", "green"),
+    "clean": ("✓", "green"),
+    "skipped": ("»", "yellow"),
+    "failed": ("✗", "red"),
+}
+
+
+def human_duration(seconds: float) -> str:
+    """Format seconds as m:ss or h:mm:ss."""
+    s = max(0, int(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def human_size(n: float) -> str:
+    """Format a byte count as B/KB/MB/GB/TB."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def middle_truncate(text: str, max_len: int) -> str:
+    """Truncate text in the middle so both ends stay visible (filenames, errors)."""
+    if max_len < 5 or len(text) <= max_len:
+        return text
+    keep = max_len - 1
+    head = keep * 2 // 3
+    return text[:head] + "…" + text[-(keep - head):]
+
+
+def _read_single_key() -> str:
+    """Read a single keypress without waiting for Enter (for TUI choice menus)."""
+    if sys.platform == "win32":
+        import msvcrt
+        return msvcrt.getwch()
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)  # cbreak, not raw, so Ctrl-C still raises KeyboardInterrupt
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)
+
+
+class Reporter:
+    """Status reporting seam between the pipeline and the console.
+
+    The base implementation is a no-op (interactive prompts fall back to the
+    classic print/input flow): plain console output comes from the existing
+    log.info() calls, which are unaffected. TuiReporter overrides these hooks
+    to drive the rich live display.
+    """
+
+    def start_batch(self, files: list[tuple[Path, float]]) -> None:
+        """Called once before processing. files is a list of (path, weight)."""
+
+    def file_start(self, path: Path) -> None:
+        """Called before each file is processed."""
+
+    def step(self, key: str, label: str) -> None:
+        """Called when the current file moves to a new pipeline stage."""
+
+    def transcribe_progress(self, done_s: float, total_s: float) -> None:
+        """Called during transcription with the position in the audio (seconds)."""
+
+    def file_result(self, path: Path, status: str, note: str = "", detections: int = 0) -> None:
+        """Called when a file finishes. status: done | clean | skipped | failed."""
+
+    def note(self, message: str) -> None:
+        """Transient message (e.g. a log line captured from a library)."""
+
+    def ask_choice(self, title: str, options: dict[str, str], prompt: str = "Select an option: ") -> str:
+        """Prompt the user to choose an option; returns the chosen key."""
+        print(f"\n{title}")
+        for key, label in options.items():
+            print(f"{key}. {label}")
+        while True:
+            choice = input(prompt).strip()
+            if choice in options:
+                return choice
+
+    def finish(self, interrupted: bool = False) -> None:
+        """Called once after the batch loop ends."""
+
+
+class TuiLogHandler(logging.Handler):
+    """Routes log records into the TUI while the live display is active.
+
+    Only used to display the last log line (remote transcription status,
+    library warnings); structured progress comes from explicit Reporter calls.
+    """
+
+    def __init__(self, reporter: "TuiReporter"):
+        super().__init__(level=logging.INFO)
+        self.reporter = reporter
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.reporter.note(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+
+if RICH_AVAILABLE:
+
+    class BatchSizeColumn(ProgressColumn):
+        """Shows completed/total bytes for size-weighted batches."""
+
+        def render(self, task) -> Text:
+            if task.total and task.total >= 10_000_000:
+                return Text(f"{human_size(task.completed)}/{human_size(task.total)}", style="dim")
+            return Text("")
+
+    class TranscribePositionColumn(ProgressColumn):
+        """Shows position in the audio (m:ss / m:ss) once duration is known."""
+
+        def render(self, task) -> Text:
+            if task.total:
+                return Text(
+                    f"{human_duration(task.completed)} / {human_duration(task.total)}",
+                    style="dim",
+                )
+            return Text("")
+
+
+class TuiReporter(Reporter):
+    """Reporter that renders a rich live dashboard instead of streaming log lines.
+
+    While active, console logging is captured (log lines still reach the log
+    file) so the frame is the only thing written to the terminal.
+    """
+
+    def __init__(self):
+        self.console = Console()
+
+        self.files: list[tuple[Path, float]] = []
+        self.weights: dict[Path, float] = {}
+        self.results: list[dict] = []
+        self.counters = {"done": 0, "clean": 0, "skipped": 0, "failed": 0, "mutes": 0}
+        self._run_start = time.monotonic()
+
+        self._batch_task = None
+        self._batch_total = 0.0
+        self._done_base = 0.0  # accumulated weight from finished files
+        self._current: Path | None = None
+        self._current_weight = 0.0
+        self._file_start = 0.0
+        self._step = ""
+        self._step_label = ""
+        self._tail = ""
+        self._prompt: list[Text] | None = None
+        self._trans_total: float | None = None
+        self._trans_started = 0.0
+        self._saved_handlers: list[logging.Handler] = []
+        self._stop = threading.Event()
+        self._ticker: threading.Thread | None = None
+        self._finished = False
+
+        self.batch_progress = Progress(
+            TextColumn("[bold]Overall[/bold]"),
+            BarColumn(bar_width=None),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            BatchSizeColumn(),
+            console=self.console,
+        )
+        self.file_progress = Progress(
+            TextColumn("  {task.description}"),
+            BarColumn(bar_width=None),
+            TranscribePositionColumn(),
+            console=self.console,
+        )
+        self.sub_task = self.file_progress.add_task("", total=None)
+        # Live calls get_renderable() during construction, so create it after
+        # all state attributes above exist
+        self.live = Live(
+            console=self.console,
+            refresh_per_second=4,
+            transient=True,
+            get_renderable=self._build_renderable,
+        )
+        self.log_handler = TuiLogHandler(self)
+
+    # -- Reporter interface ---------------------------------------------------
+
+    def start_batch(self, files: list[tuple[Path, float]]) -> None:
+        self.files = list(files)
+        self.weights = {path: weight for path, weight in self.files}
+        self._batch_total = sum(self.weights.values()) or 1.0
+        self._batch_task = self.batch_progress.add_task("Batch", total=self._batch_total)
+        self._capture_logging()
+        self.live.start()
+        self._ticker = threading.Thread(target=self._creep_indeterminate, daemon=True)
+        self._ticker.start()
+
+    def file_start(self, path: Path) -> None:
+        self._current = path
+        self._current_weight = self.weights.get(path, 1.0)
+        self._file_start = time.monotonic()
+        self._step = ""
+        self._step_label = ""
+        self._tail = ""
+        self._trans_total = None
+        self._update_batch(0.0)
+
+    def step(self, key: str, label: str) -> None:
+        self._step = key
+        self._step_label = label
+        if key == "transcribe":
+            self._trans_total = None
+            self._trans_started = time.monotonic()
+            # Recreate the sub-bar task: rich's reset(total=None) keeps the
+            # previous file's duration, and only total=None gives the pulse
+            self.file_progress.remove_task(self.sub_task)
+            self.sub_task = self.file_progress.add_task(label, total=None)
+        self._update_batch(STEP_FRACTIONS.get(key, 0.0))
+
+    def transcribe_progress(self, done_s: float, total_s: float) -> None:
+        if total_s and total_s > 0:
+            self._trans_total = total_s
+            frac = STEP_FRACTIONS["transcribe"] + 0.80 * min(1.0, done_s / total_s)
+            self._update_batch(frac)
+            self.file_progress.update(self.sub_task, total=total_s, completed=min(done_s, total_s))
+
+    def file_result(self, path: Path, status: str, note: str = "", detections: int = 0) -> None:
+        elapsed = time.monotonic() - self._file_start if self._current == path else 0.0
+        self.results.append({
+            "path": path,
+            "status": status,
+            "note": note,
+            "detections": detections,
+            "seconds": elapsed,
+        })
+        if status in self.counters:
+            self.counters[status] += 1
+        self.counters["mutes"] += detections
+        self._done_base += self.weights.get(path, 0.0)
+        self._current = None
+        self._current_weight = 0.0
+        self._update_batch(0.0)
+
+    def note(self, message: str) -> None:
+        self._tail = message.rstrip()
+
+    def ask_choice(self, title: str, options: dict[str, str], prompt: str = "Select an option: ") -> str:
+        if not sys.stdin.isatty():
+            # Can't read raw keypresses (stdin redirected) - use the classic prompt
+            self.live.stop()
+            try:
+                return super().ask_choice(title, options, prompt)
+            finally:
+                self.live.start()
+        lines = [Text(title, style="bold")]
+        lines += [Text(f"  [{key}] {label}") for key, label in options.items()]
+        lines.append(Text(f"  Press a key: [{'/'.join(options)}]", style="cyan"))
+        self._prompt = lines
+        self.live.refresh()
+        try:
+            while True:
+                key = _read_single_key()
+                if key in options:
+                    return key
+        finally:
+            self._prompt = None
+            self.live.refresh()
+
+    def finish(self, interrupted: bool = False) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._stop.set()
+        if self._ticker:
+            self._ticker.join(timeout=1.0)
+        self.live.stop()
+        self._restore_logging()
+        print_summary(self.results, self.console, interrupted)
+
+    # -- internals --------------------------------------------------------------
+
+    def _creep_indeterminate(self) -> None:
+        """Advance the batch bar slowly while transcription progress is unknown.
+
+        Covers remote transcription (one long HTTP request) and local model
+        loading, where no position callbacks arrive.
+        """
+        while not self._stop.wait(2.0):
+            if self._step == "transcribe" and self._trans_total is None and self._current_weight:
+                elapsed = time.monotonic() - self._trans_started
+                frac = STEP_FRACTIONS["transcribe"] + 0.80 * (1.0 - math.exp(-elapsed / 1200.0))
+                self._update_batch(min(frac, 0.86))
+
+    def _update_batch(self, frac: float) -> None:
+        if self._batch_task is None:
+            return
+        completed = self._done_base + self._current_weight * min(1.0, frac)
+        self.batch_progress.update(self._batch_task, completed=min(completed, self._batch_total))
+
+    def _capture_logging(self) -> None:
+        """Swap console log handlers for the TUI handler; keep the file handler."""
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                root.removeHandler(handler)
+                self._saved_handlers.append(handler)
+        root.addHandler(self.log_handler)
+
+    def _restore_logging(self) -> None:
+        root = logging.getLogger()
+        if self.log_handler in root.handlers:
+            root.removeHandler(self.log_handler)
+        for handler in self._saved_handlers:
+            root.addHandler(handler)
+        self._saved_handlers.clear()
+
+    def _build_renderable(self):
+        width = self.console.width
+        height = self.console.size.height
+        parts = []
+
+        finished = sum(v for k, v in self.counters.items() if k != "mutes")
+        if height >= 10:
+            parts.append(Text(f" Profanity Filter — {finished}/{len(self.files)} files", style="bold"))
+        parts.append(self.batch_progress)
+
+        if self._current is not None and height >= 10:
+            parts.append(Rule(style="dim"))
+
+            header = Table.grid(expand=True)
+            header.add_column(ratio=1, no_wrap=True)
+            header.add_column(justify="right", no_wrap=True)
+            name = Text("› ", style="bold cyan")
+            name.append(middle_truncate(self._current.name, max(20, width - 14)))
+            elapsed = Text(human_duration(time.monotonic() - self._file_start), style="dim")
+            header.add_row(name, elapsed)
+            parts.append(header)
+
+            if self._step_label:
+                line = Text(f"   {self._step_label}")
+                if self._tail:
+                    tail = middle_truncate(self._tail, max(20, width - len(self._step_label) - 16))
+                    line.append(f"   last: {tail}", style="dim")
+                parts.append(line)
+
+            if self._step == "transcribe":
+                parts.append(self.file_progress)
+
+            if self._prompt:
+                parts.extend(self._prompt)
+
+        # Rolling list of finished files (trimmed on short terminals)
+        list_rows = 5 if height >= 20 else (2 if height >= 10 else 0)
+        if list_rows and self.results:
+            parts.append(Rule(style="dim"))
+            table = Table.grid(expand=True)
+            table.add_column(width=3, no_wrap=True)   # glyph
+            table.add_column(ratio=1, no_wrap=True)   # name
+            table.add_column(width=30, no_wrap=True)  # note
+            table.add_column(width=7, justify="right", no_wrap=True)  # time
+            shown = self.results[-list_rows:]
+            hidden = len(self.results) - len(shown)
+            if hidden:
+                table.add_row("", Text(f"… {hidden} more", style="dim"), "", "")
+            for r in shown:
+                glyph, color = STATUS_GLYPHS.get(r["status"], ("?", "white"))
+                name = middle_truncate(r["path"].name, max(20, width - 44))
+                table.add_row(
+                    Text(glyph, style=color),
+                    Text(name),
+                    Text(middle_truncate(r["note"] or "", 28), style="dim"),
+                    Text(human_duration(r["seconds"]) if r["seconds"] else "-", style="dim"),
+                )
+            parts.append(table)
+
+        if height >= 10:
+            parts.append(Rule(style="dim"))
+            c = self.counters
+            footer = Text()
+            footer.append(f" Mutes {c['mutes']}", style="cyan")
+            for label, key, color in (
+                ("Done", "done", "green"),
+                ("Clean", "clean", "green"),
+                ("Skipped", "skipped", "yellow"),
+                ("Failed", "failed", "red"),
+            ):
+                footer.append(" | ", style="dim")
+                footer.append(f"{label} {c[key]}", style=color if c[key] else "dim")
+            footer.append(f" | Elapsed {human_duration(time.monotonic() - self._run_start)}", style="dim")
+            parts.append(footer)
+
+        return Group(*parts)
+
+
+def should_use_tui(args, config: dict) -> bool:
+    """TUI is used for interactive terminal runs; falls back to plain logging
+    when piped, when rich is missing, or in interactive/ex verbose modes."""
+    return (
+        RICH_AVAILABLE
+        and config.get("tui", True)
+        and not args.no_tui
+        and not args.cleanup
+        and not args.verbose
+        and sys.stdout.isatty()
+        and os.environ.get("TERM") not in (None, "", "dumb")
+    )
+
+
+def print_summary(results: list[dict], console, interrupted: bool = False) -> None:
+    """Print the permanent end-of-run summary (after the live display is gone)."""
+    if not results:
+        return
+    table = Table(show_header=True, header_style="dim")
+    table.add_column("", width=3, no_wrap=True)
+    table.add_column("File", ratio=1, no_wrap=True, overflow="ellipsis")
+    table.add_column("Result", ratio=2)
+    table.add_column("Time", width=8, justify="right", no_wrap=True)
+    for r in results:
+        glyph, color = STATUS_GLYPHS.get(r["status"], ("?", "white"))
+        note = r["note"] or ""
+        if len(note) > 80:
+            note = note[:77] + "…"
+        table.add_row(
+            Text(glyph, style=color),
+            Text(middle_truncate(r["path"].name, 60)),
+            Text(note, style="dim"),
+            Text(human_duration(r["seconds"]) if r["seconds"] else "-", style="dim"),
+        )
+    console.print()
+    console.print(table)
+
+    counts = Counter(r["status"] for r in results)
+    mutes = sum(r["detections"] for r in results if r["status"] == "done")
+    summary = Text()
+    summary.append(f"{len(results)} file(s)", style="bold")
+    summary.append(f" · {mutes} mutes", style="cyan")
+    for status, color in (("done", "green"), ("clean", "green"), ("skipped", "yellow"), ("failed", "red")):
+        if counts.get(status):
+            summary.append(f" · {counts[status]} {status}", style=color)
+    console.print(summary)
+    if interrupted:
+        console.print(Text("Run interrupted — partial results above", style="bold red"))
 
 
 def pattern_to_regex(pattern: str) -> str:
@@ -247,7 +737,8 @@ def extract_audio(
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "base",
-    device: str = "cpu"
+    device: str = "cpu",
+    on_progress=None
 ) -> list[dict]:
     """Transcribe audio using local Whisper and return word-level timestamps."""
     if WhisperModel is None:
@@ -276,6 +767,8 @@ def transcribe_audio(
                     "start": word.start,
                     "end": word.end,
                 })
+                if on_progress:
+                    on_progress(word.end, info.duration)
 
     logging.info(f"Transcribed {len(words)} words")
     return words
@@ -552,18 +1045,22 @@ def process_video(
     transcript_path: Path = None,
     replace_clean: bool = False,
     skip_clean: bool = False,
-    logger: logging.Logger = None
+    logger: logging.Logger = None,
+    reporter: Reporter = None
 ) -> dict:
     """Process a single video file."""
     log = logger or logging.getLogger(__name__)
+    reporter = reporter or Reporter()
 
     log.info(f"Processing: {video_path.name}")
 
     # Get audio stream info early
+    reporter.step("probe", "Probing audio streams")
     try:
         audio_streams = get_audio_info(video_path)
     except Exception as e:
         log.error(f"Failed to get audio info: {e}")
+        reporter.file_result(video_path, "failed", f"probe failed: {e}")
         return {}
 
     # Check for existing clean track
@@ -582,25 +1079,28 @@ def process_video(
             log.info("Found existing clean track - overwriting due to --replace-clean")
         elif skip_clean:
             log.info("Found existing clean track - skipping due to --skip-clean")
+            reporter.file_result(video_path, "skipped", "already has clean track")
             return {}
         elif not dry_run:
-            # Interactive prompt
-            print(f"\nExisting clean track found in: {video_path.name}")
-            print("1. Overwrite existing track")
-            print("2. Skip file")
-            print("3. Create new track (duplicate)")
-            while True:
-                choice = input("Select an option [1-3]: ").strip()
-                if choice == "1":
-                    replace_clean = True
-                    log.info("User selected: Overwrite")
-                    break
-                elif choice == "2":
-                    log.info("User selected: Skip")
-                    return {}
-                elif choice == "3":
-                    log.info("User selected: Create new track")
-                    break
+            # Interactive prompt (rendered inside the TUI when active)
+            choice = reporter.ask_choice(
+                f"Existing clean track found in: {video_path.name}",
+                {
+                    "1": "Overwrite existing track",
+                    "2": "Skip file",
+                    "3": "Create new track (duplicate)",
+                },
+                prompt="Select an option [1-3]: ",
+            )
+            if choice == "1":
+                replace_clean = True
+                log.info("User selected: Overwrite")
+            elif choice == "2":
+                log.info("User selected: Skip")
+                reporter.file_result(video_path, "skipped", "user skipped")
+                return {}
+            elif choice == "3":
+                log.info("User selected: Create new track")
                 
     # Determine audio track to process
     track_index = config["audio_track_index"]
@@ -624,12 +1124,14 @@ def process_video(
 
         # Extract mono audio for Whisper transcription
         log.info("Extracting audio for transcription...")
+        reporter.step("extract", "Extracting audio")
         extract_audio(video_path, audio_for_transcription, track_index, for_transcription=True)
 
         # Transcribe (local or remote)
         if config.get("whisper_mode") == "remote":
             from transcribe_remote import transcribe_remote
             log.info(f"Using remote transcription at {config['whisper_api_url']}")
+            reporter.step("transcribe", "Transcribing (remote)")
             words = transcribe_remote(
                 audio_for_transcription,
                 config["whisper_api_url"],
@@ -637,10 +1139,12 @@ def process_video(
                 timeout=config.get("whisper_api_timeout", 600),
             )
         else:
+            reporter.step("transcribe", f"Transcribing ({config['whisper_model']}/{config['whisper_device']})")
             words = transcribe_audio(
                 audio_for_transcription,
                 config["whisper_model"],
                 config["whisper_device"],
+                on_progress=reporter.transcribe_progress,
             )
 
         # Save transcript if requested
@@ -652,6 +1156,7 @@ def process_video(
 
         # Match profanity
         log.info("Detecting profanity...")
+        reporter.step("match", "Detecting profanity")
         detections = match_profanity(words, profanity_list, combined_regex)
         log.info(f"Found {len(detections)} profanity instances")
 
@@ -666,6 +1171,7 @@ def process_video(
             log.info("Dry run - not creating output files")
             for d in detections:
                 log.info(f"  [{d['start']:.2f}s] \"{d['word']}\" (severity: {d['severity']})")
+            reporter.file_result(video_path, "done", f"dry run: {len(detections)} detections", len(detections))
             return {
                 "detections": detections,
                 "mute_ranges": mute_ranges,
@@ -674,6 +1180,7 @@ def process_video(
 
         if not detections:
             log.info("No profanity detected - skipping file")
+            reporter.file_result(video_path, "clean", "no profanity detected")
             return {
                 "detections": [],
                 "mute_ranges": [],
@@ -682,15 +1189,18 @@ def process_video(
 
         # Extract full quality audio (preserves original channels: stereo, 5.1, etc.)
         log.info("Extracting full quality audio...")
+        reporter.step("extract_full", "Extracting full quality audio")
         extract_audio(video_path, audio_full_quality, track_index, for_transcription=False)
 
         # Create clean audio with muted profanity
         log.info("Creating clean audio track...")
+        reporter.step("clean", "Building clean audio track")
         volume_boost = config.get("volume_boost", 1.0)
         create_clean_audio(audio_full_quality, clean_audio, mute_ranges, volume_boost)
 
         # Remux video - write to temp file first, then replace original
         log.info("Adding clean audio track to video...")
+        reporter.step("remux", "Remuxing video")
         temp_output = temp_path / f"output{video_path.suffix}"
         remux_video(video_path, clean_audio, temp_output, config["clean_track_title"], config["clean_track_mode"], replace_clean)
 
@@ -705,6 +1215,8 @@ def process_video(
             log_path = video_path.with_suffix(".profanity.log")
             write_log(log_path, video_path, detections, mute_ranges)
             log.info(f"Log: {log_path}")
+
+        reporter.file_result(video_path, "done", f"{len(detections)} mutes", len(detections))
 
         return {
             "detections": detections,
@@ -855,6 +1367,12 @@ def main():
         help="Use remote Whisper ASR webservice for transcription",
     )
 
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Disable the live progress display (use plain log output)",
+    )
+
     args = parser.parse_args()
 
     # Determine log directory based on input
@@ -911,20 +1429,43 @@ def main():
 
     logger.info(f"Found {len(files_to_process)} video(s) to process")
 
+    # Set up progress reporting (rich live dashboard or plain no-op)
+    use_tui = should_use_tui(args, config)
+    if not RICH_AVAILABLE and not args.no_tui and not args.cleanup and not args.verbose and sys.stdout.isatty():
+        logger.info("rich is not installed - falling back to plain output (pip install rich)")
 
-    
-    # Process each file
-    for video_path in files_to_process:
+    reporter = TuiReporter() if use_tui else Reporter()
+    weighted_files = []
+    for f in files_to_process:
         try:
-            if args.cleanup:
-                cleanup_tracks(video_path, config, logger)
-            else:
-                process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, args.skip_clean, logger)
-        except Exception as e:
-            logger.error(f"Failed to process {video_path}: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
+            weighted_files.append((f, float(max(f.stat().st_size, 1))))
+        except OSError:
+            weighted_files.append((f, 1.0))
+    reporter.start_batch(weighted_files)
+
+    # Process each file
+    try:
+        for video_path in files_to_process:
+            reporter.file_start(video_path)
+            try:
+                if args.cleanup:
+                    cleanup_tracks(video_path, config, logger)
+                else:
+                    process_video(video_path, config, profanity_list, combined_regex, args.dry_run, args.transcript, args.replace_clean, args.skip_clean, logger, reporter)
+            except Exception as e:
+                logger.error(f"Failed to process {video_path}: {e}")
+                reporter.file_result(video_path, "failed", str(e))
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+    except KeyboardInterrupt:
+        if not use_tui:
+            raise
+        reporter.finish(interrupted=True)
+        logger.error("Interrupted by user")
+        sys.exit(130)
+    finally:
+        reporter.finish()
 
 
 if __name__ == "__main__":

@@ -7,3 +7,4 @@ huggingface-hub>=0.21
 tokenizers>=0.13,<1
 requests>=2.31.0
 pyyaml>=6.0
+rich>=13.7  # live TUI progress display (optional; pure-Python wheel)
